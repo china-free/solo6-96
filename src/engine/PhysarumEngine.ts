@@ -1,11 +1,18 @@
 import { Particle, Food, SimParams, SimStats } from "@/types";
 
+const SIM_SCALE = 0.45;
+
 export class PhysarumEngine {
-  width: number;
-  height: number;
+  displayWidth: number;
+  displayHeight: number;
+  simWidth: number;
+  simHeight: number;
   dishRadius: number;
   dishCenterX: number;
   dishCenterY: number;
+  simDishRadius: number;
+  simDishCenterX: number;
+  simDishCenterY: number;
 
   particles: Particle[] = [];
   trailFieldA: Float32Array;
@@ -19,28 +26,64 @@ export class PhysarumEngine {
   foodConsumedThisFrame: Set<number> = new Set();
   totalFoodCollected = 0;
 
-  constructor(width: number, height: number) {
-    this.width = width;
-    this.height = height;
-    this.dishRadius = Math.min(width, height) * 0.47;
-    this.dishCenterX = width / 2;
-    this.dishCenterY = height / 2;
+  private cosTable: Float32Array;
+  private sinTable: Float32Array;
+  private readonly TABLE_SIZE = 2048;
 
-    const size = width * height;
+  constructor(displayWidth: number, displayHeight: number) {
+    this.displayWidth = displayWidth;
+    this.displayHeight = displayHeight;
+    this.simWidth = Math.floor(displayWidth * SIM_SCALE);
+    this.simHeight = Math.floor(displayHeight * SIM_SCALE);
+
+    this.dishRadius = Math.min(displayWidth, displayHeight) * 0.47;
+    this.dishCenterX = displayWidth / 2;
+    this.dishCenterY = displayHeight / 2;
+
+    this.simDishRadius = this.dishRadius * SIM_SCALE;
+    this.simDishCenterX = this.simWidth / 2;
+    this.simDishCenterY = this.simHeight / 2;
+
+    const size = this.simWidth * this.simHeight;
     this.trailFieldA = new Float32Array(size);
     this.trailFieldB = new Float32Array(size);
     this.attractantFieldA = new Float32Array(size);
     this.attractantFieldB = new Float32Array(size);
+
+    this.cosTable = new Float32Array(this.TABLE_SIZE);
+    this.sinTable = new Float32Array(this.TABLE_SIZE);
+    for (let i = 0; i < this.TABLE_SIZE; i++) {
+      const angle = (i / this.TABLE_SIZE) * Math.PI * 2;
+      this.cosTable[i] = Math.cos(angle);
+      this.sinTable[i] = Math.sin(angle);
+    }
   }
 
-  resize(width: number, height: number) {
-    this.width = width;
-    this.height = height;
-    this.dishRadius = Math.min(width, height) * 0.47;
-    this.dishCenterX = width / 2;
-    this.dishCenterY = height / 2;
+  private fastCos(angle: number): number {
+    let idx = Math.floor(((angle / (Math.PI * 2)) % 1 + 1) % 1 * this.TABLE_SIZE);
+    return this.cosTable[idx];
+  }
 
-    const size = width * height;
+  private fastSin(angle: number): number {
+    let idx = Math.floor(((angle / (Math.PI * 2)) % 1 + 1) % 1 * this.TABLE_SIZE);
+    return this.sinTable[idx];
+  }
+
+  resize(displayWidth: number, displayHeight: number) {
+    this.displayWidth = displayWidth;
+    this.displayHeight = displayHeight;
+    this.simWidth = Math.floor(displayWidth * SIM_SCALE);
+    this.simHeight = Math.floor(displayHeight * SIM_SCALE);
+
+    this.dishRadius = Math.min(displayWidth, displayHeight) * 0.47;
+    this.dishCenterX = displayWidth / 2;
+    this.dishCenterY = displayHeight / 2;
+
+    this.simDishRadius = this.dishRadius * SIM_SCALE;
+    this.simDishCenterX = this.simWidth / 2;
+    this.simDishCenterY = this.simHeight / 2;
+
+    const size = this.simWidth * this.simHeight;
     this.trailFieldA = new Float32Array(size);
     this.trailFieldB = new Float32Array(size);
     this.attractantFieldA = new Float32Array(size);
@@ -50,9 +93,9 @@ export class PhysarumEngine {
 
   initializeParticles(count: number) {
     this.particles = [];
-    const cx = this.dishCenterX;
-    const cy = this.dishCenterY;
-    const startRadius = Math.min(this.dishRadius * 0.12, 40);
+    const cx = this.simDishCenterX;
+    const cy = this.simDishCenterY;
+    const startRadius = Math.min(this.simDishRadius * 0.15, 25);
 
     for (let i = 0; i < count; i++) {
       const angle = Math.random() * Math.PI * 2;
@@ -61,19 +104,41 @@ export class PhysarumEngine {
         x: cx + Math.cos(angle) * r,
         y: cy + Math.sin(angle) * r,
         angle: Math.random() * Math.PI * 2,
-        speed: 1,
+        speed: 0.8 + Math.random() * 0.4,
         trailIntensity: 0.8 + Math.random() * 0.4,
       });
     }
   }
 
   setFoods(foods: Food[]) {
-    this.foods = foods.map((f) => ({ ...f }));
+    this.foods = foods.map((f) => ({
+      ...f,
+      x: f.x * SIM_SCALE,
+      y: f.y * SIM_SCALE,
+      radius: f.radius * SIM_SCALE,
+    }));
+  }
+
+  reset(particleCount: number) {
+    this.foods = [];
     this.totalFoodCollected = 0;
+    this.foodConsumedThisFrame.clear();
+    this.trailFieldA.fill(0);
+    this.trailFieldB.fill(0);
+    this.attractantFieldA.fill(0);
+    this.attractantFieldB.fill(0);
+    this.useTrailA = true;
+    this.useAttractantA = true;
+    this.initializeParticles(particleCount);
   }
 
   addFood(food: Food) {
-    this.foods.push({ ...food });
+    this.foods.push({
+      ...food,
+      x: food.x * SIM_SCALE,
+      y: food.y * SIM_SCALE,
+      radius: food.radius * SIM_SCALE,
+    });
   }
 
   inDish(x: number, y: number): boolean {
@@ -83,51 +148,72 @@ export class PhysarumEngine {
   }
 
   private sampleField(field: Float32Array, x: number, y: number): number {
-    const ix = Math.floor(x);
-    const iy = Math.floor(y);
-    if (ix < 0 || ix >= this.width || iy < 0 || iy >= this.height) return 0;
-    return field[iy * this.width + ix];
+    const ix = x | 0;
+    const iy = y | 0;
+    if (ix < 0 || ix >= this.simWidth || iy < 0 || iy >= this.simHeight) return 0;
+    return field[iy * this.simWidth + ix];
   }
 
   private depositTrail(x: number, y: number, amount: number) {
-    const ix = Math.floor(x);
-    const iy = Math.floor(y);
-    if (ix < 0 || ix >= this.width || iy < 0 || iy >= this.height) return;
+    const ix = x | 0;
+    const iy = y | 0;
+    if (ix < 0 || ix >= this.simWidth || iy < 0 || iy >= this.simHeight) return;
     const field = this.useTrailA ? this.trailFieldA : this.trailFieldB;
-    const idx = iy * this.width + ix;
-    field[idx] = Math.min(10, field[idx] + amount);
+    const idx = iy * this.simWidth + ix;
+    const val = field[idx] + amount;
+    field[idx] = val > 8 ? 8 : val;
   }
 
   private emitAttractant() {
-    const target = this.useAttractantA ? this.attractantFieldB : this.attractantFieldA;
     const source = this.useAttractantA ? this.attractantFieldA : this.attractantFieldB;
-    const w = this.width;
-    const h = this.height;
+    const target = this.useAttractantA ? this.attractantFieldB : this.attractantFieldA;
+    const w = this.simWidth;
+    const h = this.simHeight;
 
-    for (let i = 0; i < target.length; i++) {
-      target[i] = source[i] * 0.98;
+    const d = 0.09;
+    const center = 1 - d * 4;
+    const decay = 0.992;
+
+    for (let y = 1; y < h - 1; y++) {
+      const row = y * w;
+      const prevRow = row - w;
+      const nextRow = row + w;
+      for (let x = 1; x < w - 1; x++) {
+        const idx = row + x;
+        target[idx] =
+          (source[idx] * center +
+            source[idx - 1] * d +
+            source[idx + 1] * d +
+            source[prevRow + x] * d +
+            source[nextRow + x] * d) *
+          decay;
+      }
     }
 
     for (const food of this.foods) {
       if (food.energy <= 0) continue;
-      const radius = food.radius * 4;
-      const emission = food.emissionRate * (food.energy / food.maxEnergy);
-      const minX = Math.max(0, Math.floor(food.x - radius));
-      const maxX = Math.min(w - 1, Math.ceil(food.x + radius));
-      const minY = Math.max(0, Math.floor(food.y - radius));
-      const maxY = Math.min(h - 1, Math.ceil(food.y + radius));
+      const radius = food.radius * 8;
+      const emission = food.emissionRate * (food.energy / food.maxEnergy) * 2.5;
+      const minX = Math.max(1, (food.x - radius) | 0);
+      const maxX = Math.min(w - 2, (food.x + radius) | 0);
+      const minY = Math.max(1, (food.y - radius) | 0);
+      const maxY = Math.min(h - 2, (food.y + radius) | 0);
       const r2 = radius * radius;
+      const fx = food.x;
+      const fy = food.y;
 
       for (let y = minY; y <= maxY; y++) {
         for (let x = minX; x <= maxX; x++) {
-          const dx = x - food.x;
-          const dy = y - food.y;
+          const dx = x - fx;
+          const dy = y - fy;
           const dist2 = dx * dx + dy * dy;
           if (dist2 < r2) {
-            const falloff = 1 - Math.sqrt(dist2) / radius;
-            const val = emission * falloff * falloff;
+            const dist = Math.sqrt(dist2);
+            const falloff = 1 - dist / radius;
+            const val = emission * falloff;
             const idx = y * w + x;
-            target[idx] = Math.min(10, target[idx] + val);
+            const nv = target[idx] + val;
+            target[idx] = nv > 8 ? 8 : nv;
           }
         }
       }
@@ -138,21 +224,25 @@ export class PhysarumEngine {
   private diffuseAndDecayTrail() {
     const source = this.useTrailA ? this.trailFieldA : this.trailFieldB;
     const target = this.useTrailA ? this.trailFieldB : this.trailFieldA;
-    const w = this.width;
-    const h = this.height;
-    const d = 0.07;
+    const w = this.simWidth;
+    const h = this.simHeight;
+    const decay = 0.993;
+    const d = 0.08;
     const center = 1 - d * 4;
 
     for (let y = 1; y < h - 1; y++) {
+      let row = y * w;
+      const prevRow = row - w;
+      const nextRow = row + w;
       for (let x = 1; x < w - 1; x++) {
-        const idx = y * w + x;
-        const val =
-          source[idx] * center +
-          source[idx - 1] * d +
-          source[idx + 1] * d +
-          source[idx - w] * d +
-          source[idx + w] * d;
-        target[idx] = val * 0.995;
+        const idx = row + x;
+        target[idx] =
+          (source[idx] * center +
+            source[idx - 1] * d +
+            source[idx + 1] * d +
+            source[prevRow + x] * d +
+            source[nextRow + x] * d) *
+          decay;
       }
     }
     this.useTrailA = !this.useTrailA;
@@ -164,27 +254,43 @@ export class PhysarumEngine {
     const trailField = this.useTrailA ? this.trailFieldA : this.trailFieldB;
     const attractantField = this.useAttractantA ? this.attractantFieldA : this.attractantFieldB;
     const sa = params.sensorAngle;
-    const sd = params.sensorDistance;
+    const sd = params.sensorDistance * SIM_SCALE;
     const rs = params.rotationSpeed;
-    const ms = params.moveSpeed;
+    const ms = params.moveSpeed * SIM_SCALE;
     const tw = params.trailWeight;
     const aw = params.attractantWeight;
     const eb = params.explorationBias;
     const pulse = Math.sin(time * params.pulseFrequency * Math.PI * 2) * 0.3 + 1;
 
+    const simCx = this.simDishCenterX;
+    const simCy = this.simDishCenterY;
+    const simR2 = this.simDishRadius * this.simDishRadius;
+
     this.foodConsumedThisFrame.clear();
     let activeCount = 0;
     let trunkSum = 0;
 
-    for (let i = 0; i < this.particles.length; i++) {
-      const p = this.particles[i];
+    const particles = this.particles;
+    const particleCount = particles.length;
+    const foods = this.foods;
 
-      const fwdX = p.x + Math.cos(p.angle) * sd;
-      const fwdY = p.y + Math.sin(p.angle) * sd;
-      const leftX = p.x + Math.cos(p.angle - sa) * sd;
-      const leftY = p.y + Math.sin(p.angle - sa) * sd;
-      const rightX = p.x + Math.cos(p.angle + sa) * sd;
-      const rightY = p.y + Math.sin(p.angle + sa) * sd;
+    for (let i = 0; i < particleCount; i++) {
+      const p = particles[i];
+      const ang = p.angle;
+
+      const cosA = Math.cos(ang);
+      const sinA = Math.sin(ang);
+      const cosL = Math.cos(ang - sa);
+      const sinL = Math.sin(ang - sa);
+      const cosR = Math.cos(ang + sa);
+      const sinR = Math.sin(ang + sa);
+
+      const fwdX = p.x + cosA * sd;
+      const fwdY = p.y + sinA * sd;
+      const leftX = p.x + cosL * sd;
+      const leftY = p.y + sinL * sd;
+      const rightX = p.x + cosR * sd;
+      const rightY = p.y + sinR * sd;
 
       const fwdT = this.sampleField(trailField, fwdX, fwdY);
       const leftT = this.sampleField(trailField, leftX, leftY);
@@ -209,14 +315,15 @@ export class PhysarumEngine {
         p.angle += randomTurn;
       }
 
-      const speedMs = ms * pulse;
-      let nx = p.x + Math.cos(p.angle) * speedMs;
-      let ny = p.y + Math.sin(p.angle) * speedMs;
+      const speedMs = ms * pulse * p.speed;
+      const nx = p.x + Math.cos(p.angle) * speedMs;
+      const ny = p.y + Math.sin(p.angle) * speedMs;
 
-      const dx = nx - this.dishCenterX;
-      const dy = ny - this.dishCenterY;
+      const dx = nx - simCx;
+      const dy = ny - simCy;
       const dist2 = dx * dx + dy * dy;
-      if (dist2 > this.dishRadius * this.dishRadius) {
+
+      if (dist2 > simR2) {
         const dist = Math.sqrt(dist2);
         const nx1 = dx / dist;
         const ny1 = dy / dist;
@@ -226,19 +333,20 @@ export class PhysarumEngine {
         const rx = vx - 2 * dot * nx1;
         const ry = vy - 2 * dot * ny1;
         p.angle = Math.atan2(ry, rx);
-        nx = this.dishCenterX + nx1 * (this.dishRadius - 1);
-        ny = this.dishCenterY + ny1 * (this.dishRadius - 1);
+        p.x = simCx + nx1 * (this.simDishRadius - 1);
+        p.y = simCy + ny1 * (this.simDishRadius - 1);
+      } else {
+        p.x = nx;
+        p.y = ny;
       }
 
-      p.x = nx;
-      p.y = ny;
-
-      for (const food of this.foods) {
+      for (let f = 0; f < foods.length; f++) {
+        const food = foods[f];
         if (food.energy <= 0) continue;
         const fdx = p.x - food.x;
         const fdy = p.y - food.y;
         if (fdx * fdx + fdy * fdy < food.radius * food.radius) {
-          food.energy = Math.max(0, food.energy - 0.15);
+          food.energy = Math.max(0, food.energy - 0.1);
           this.foodConsumedThisFrame.add(food.id);
           break;
         }
@@ -246,26 +354,29 @@ export class PhysarumEngine {
 
       this.depositTrail(p.x, p.y, tw * p.trailIntensity * pulse);
 
-      const localTrail = this.sampleField(trailField, p.x, p.y);
-      if (localTrail > 0.05) activeCount++;
-      if (localTrail > 2.0) trunkSum++;
+      const localT = trailField[(p.y | 0) * this.simWidth + (p.x | 0)] || 0;
+      if (localT > 0.05) activeCount++;
+      if (localT > 1.5) trunkSum++;
     }
 
-    this.foods = this.foods.filter((f) => f.energy > 0.5);
+    this.foods = foods.filter((f) => f.energy > 0.5);
     this.totalFoodCollected += this.foodConsumedThisFrame.size;
 
     this.diffuseAndDecayTrail();
 
     let pheromoneSum = 0;
-    for (let i = 0; i < trailField.length; i++) {
+    const sampleStep = 16;
+    let sampleCount = 0;
+    for (let i = 0; i < trailField.length; i += sampleStep) {
       pheromoneSum += trailField[i];
+      sampleCount++;
     }
 
     return {
       foodCollected: this.totalFoodCollected,
       activeParticles: activeCount,
-      trunkCount: Math.floor(trunkSum / 50),
-      avgPheromone: pheromoneSum / trailField.length,
+      trunkCount: Math.floor(trunkSum / 30),
+      avgPheromone: pheromoneSum / sampleCount,
     };
   }
 
@@ -275,5 +386,18 @@ export class PhysarumEngine {
 
   getAttractantField(): Float32Array {
     return this.useAttractantA ? this.attractantFieldA : this.attractantFieldB;
+  }
+
+  getSimScale(): number {
+    return SIM_SCALE;
+  }
+
+  getDisplayFoods(): Food[] {
+    return this.foods.map((f) => ({
+      ...f,
+      x: f.x / SIM_SCALE,
+      y: f.y / SIM_SCALE,
+      radius: f.radius / SIM_SCALE,
+    }));
   }
 }

@@ -8,6 +8,7 @@ interface SimState {
   isPaused: boolean;
   showTrails: boolean;
   showAttractant: boolean;
+  resetId: number;
   setParam: <K extends keyof SimParams>(key: K, value: SimParams[K]) => void;
   setStats: (stats: SimStats) => void;
   setFoods: (foods: Food[]) => void;
@@ -38,6 +39,7 @@ export const useSimStore = create<SimState>((set) => ({
   isPaused: false,
   showTrails: true,
   showAttractant: false,
+  resetId: 0,
 
   setParam: (key, value) =>
     set((state) => ({ params: { ...state.params, [key]: value } })),
@@ -58,9 +60,10 @@ export const useSimStore = create<SimState>((set) => ({
 
   resetSimulation: () => {
     foodIdCounter = 0;
-    set({
+    set((state) => ({
       foods: [],
       stats: { foodCollected: 0, activeParticles: 0, trunkCount: 0, avgPheromone: 0 },
-    });
+      resetId: state.resetId + 1,
+    }));
   },
 }));
